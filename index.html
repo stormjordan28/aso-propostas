@@ -348,6 +348,7 @@ function route(){
   if(r==='nova')return viewNova(a);
   if(r==='precos')return shell('precos',viewPrecos());
   if(r==='prompt')return shell('prompt',viewPrompt(a));
+  if(r==='contratos')return shell('contratos',viewContratos(a));
   return shell('dash',viewDash());
 }
 
@@ -365,7 +366,7 @@ function viewLogin(){
 
 /* ================= SHELL ================= */
 function shell(on,html){
-  const nav=[['dash','▦','Propostas'],['nova','＋','Nova proposta'],['empresas','🏢','Empresas'],['precos','₿','Tabela de preços'],['prompt','✦','Gerador de prompt']];
+  const nav=[['dash','▦','Propostas'],['nova','＋','Nova proposta'],['empresas','🏢','Empresas'],['precos','₿','Tabela de preços'],['contratos','📄','Gerador de contrato'],['prompt','✦','Gerador de prompt']];
   app.innerHTML=`<div class="shell"><aside class="side">
     ${logo()}<div style="font-size:11px;opacity:.7;padding:0 12px 14px;text-transform:uppercase;letter-spacing:1px;font-weight:700">Sistema de Propostas</div>
     ${nav.map(n=>`<a class="nav ${on===n[0]?'on':''}" href="#/${n[0]}"><span>${n[1].replace('₿','R$')}</span>${n[2]}</a>`).join('')}
@@ -386,7 +387,7 @@ function viewDash(){
   const valorAp=ap.reduce((s,p)=>s+calc(p,p.itensAprovados).total,0);
   bindPage=()=>{
     document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{const p=getProp(b.dataset.copy);navigator.clipboard?.writeText(linkProp(p));toast('Link copiado')});
-    document.querySelectorAll('[data-ct]').forEach(b=>b.onclick=()=>{const p=getProp(b.dataset.ct);p.status='contrato';p.contratoEm=p.contratoEm||hoje();save();window.open('#/contrato/'+p.id,'_blank');route()});
+    document.querySelectorAll('[data-ct]').forEach(b=>b.onclick=()=>{const p=getProp(b.dataset.ct);p.status='contrato';p.contratoEm=p.contratoEm||hoje();save();location.hash='#/contratos/'+p.id});
     document.querySelectorAll('[data-ap]').forEach(b=>b.onclick=()=>{const p=getProp(b.dataset.ap);p.status='aprovada';p.aprovadaEm=hoje();p.itensAprovados=p.itensAprovados||JSON.parse(JSON.stringify(p.itens));save();toast('Proposta marcada como aprovada');route()});
     document.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{if(confirmar('Excluir esta proposta?')){db.propostas=db.propostas.filter(p=>p.id!==b.dataset.del);save();route()}});
   };
@@ -404,7 +405,7 @@ function viewDash(){
     <td>${fdata(p.criada)}</td><td class="num"><b>${brl(c.total)}</b></td><td><span class="pill st-${p.status}">${ST[p.status]}</span></td>
     <td class="num"><a class="btn sm light" href="#/p/${p.id}" target="_blank">Abrir link</a> <button class="btn sm light" data-copy="${p.id}">Copiar link</button>
     <a class="btn sm green" href="${wa}" target="_blank">WhatsApp</a>
-    ${['aprovada','contrato'].includes(p.status)?`<button class="btn sm" data-ct="${p.id}">Contrato PDF</button>`:`<button class="btn sm light" data-ap="${p.id}" title="Use quando o cliente aprovar pelo WhatsApp">Marcar aprovada</button>`}
+    ${['aprovada','contrato'].includes(p.status)?`<button class="btn sm" data-ct="${p.id}">Contrato</button>`:`<button class="btn sm light" data-ap="${p.id}" title="Use quando o cliente aprovar pelo WhatsApp">Marcar aprovada</button>`}
     <button class="iconbtn" title="Excluir" data-del="${p.id}">🗑</button></td></tr>`}).join('')}
   </tbody></table>`:`<div class="empty">Nenhuma proposta ainda.</div>`}</div>`;
 }
@@ -778,44 +779,112 @@ function extenso(n){ // por extenso simplificado para valores em reais
   if(cent)s+=' e '+ate999(cent)+(cent===1?' centavo':' centavos');
   return s;
 }
-function viewContrato(id){
-  const p=getProp(id);if(!p){app.innerHTML='<div class="empty">Contrato não encontrado.</div>';return}
-  const e=getEmp(p.empresaId),cf=db.config,c=calc(p,p.itensAprovados||p.itens);
-  document.title=`Contrato ${p.num} - ${e.fantasia||e.razao}`;
-  const dt=new Date(p.contratoEm||hoje()).toLocaleDateString('pt-BR',{day:'numeric',month:'long',year:'numeric'});
-  app.innerHTML=`<div class="ct-bar"><b>Contrato ${p.num} · ${esc(e.fantasia||e.razao)}</b>
-    <div style="display:flex;gap:8px"><button class="btn green" onclick="window.print()">⬇ Baixar PDF</button><a class="btn light" href="#/dash">Voltar ao painel</a></div></div>
-  <div class="paper">
-    <div class="ct-head">${logo()}<div style="text-align:right;font-size:11px;color:var(--muted)">Contrato nº ${p.num}<br>Ref. proposta ${p.num}</div></div>
+const numExt=n=>extenso(+n||0).replace(/ reais?$/,'').replace(/ real$/,'');
+function ctDef(p){
+  return Object.assign({numero:'CT-'+p.num,inicio:new Date().toISOString().slice(0,10),vigencia:12,venc:10,multa:2,juros:1,aviso:30,
+    reajuste:'IPCA acumulado, a cada 12 meses',pagamento:p.pagamento,foro:'Rio Verde - GO',cidade:'Rio Verde - GO',
+    repNome:(getEmp(p.empresaId)||{}).contato||'',repCargo:(getEmp(p.empresaId)||{}).cargo||'',repDoc:'',aspNome:'',t1:'',t2:'',extras:[]},p.ct||{});
+}
+function contratoHTML(p){
+  const e=getEmp(p.empresaId),cf=db.config,c=calc(p,p.itensAprovados||p.itens),ct=ctDef(p);
+  const dt=new Date((ct.inicio||hoje().slice(0,10))+'T12:00:00').toLocaleDateString('pt-BR',{day:'numeric',month:'long',year:'numeric'});
+  let n=0;const cl=t=>`<h4>Cláusula ${++n}ª · ${esc(t)}</h4>`;
+  return `<div class="ct-head">${logo()}<div style="text-align:right;font-size:11px;color:var(--muted)">Contrato nº ${esc(ct.numero)}<br>Ref. proposta ${p.num}</div></div>
     <h1>Contrato de prestação de serviços em Saúde e Segurança do Trabalho</h1><div class="sub">Instrumento particular</div>
-    <div class="parts"><div><b>CONTRATADA</b><br>${esc(cf.nome)}<br>CNPJ ${esc(cf.cnpj)}<br>${esc(cf.endereco)}</div>
-    <div><b>CONTRATANTE</b><br>${esc(e.razao)}<br>CNPJ ${fmtCNPJ(e.cnpj)}<br>${esc(e.endereco||'')} ${esc(e.cidade||'')}${e.uf?' - '+esc(e.uf):''}<br>Representante: ${esc(e.contato)}${e.cargo?', '+esc(e.cargo):''}</div></div>
+    <div class="parts"><div><b>CONTRATADA</b><br>${esc(cf.nome)}<br>CNPJ ${esc(cf.cnpj)}<br>${esc(cf.endereco)}${ct.aspNome?`<br>Representante: ${esc(ct.aspNome)}`:''}</div>
+    <div><b>CONTRATANTE</b><br>${esc(e.razao)}<br>CNPJ ${fmtCNPJ(e.cnpj)}<br>${esc(e.endereco||'')} ${esc(e.cidade||'')}${e.uf?' - '+esc(e.uf):''}<br>Representante: ${esc(ct.repNome)}${ct.repCargo?', '+esc(ct.repCargo):''}${ct.repDoc?` · ${esc(ct.repDoc)}`:''}</div></div>
     <p>As partes acima qualificadas celebram o presente contrato, que se regerá pelas cláusulas a seguir.</p>
-    <h4>Cláusula 1ª · Do objeto</h4>
-    <p>A CONTRATADA prestará à CONTRATANTE os serviços de saúde e segurança do trabalho abaixo, conforme a proposta nº ${p.num}, aprovada em ${p.aprovadaEm?fdata(p.aprovadaEm):'—'}:</p>
+    ${cl('Do objeto')}
+    <p>A CONTRATADA prestará à CONTRATANTE os serviços de saúde e segurança do trabalho abaixo, conforme a proposta nº ${p.num}${p.aprovadaEm?`, aprovada em ${fdata(p.aprovadaEm)}`:''}:</p>
     <table><thead><tr><th>Serviço</th><th class="num">Qtd.</th><th class="num">Valor</th></tr></thead><tbody>
       ${c.itens.map(i=>`<tr><td>${i.nome}</td><td class="num">${i.qtd}</td><td class="num">${brl(i.total)}</td></tr>`).join('')}
       <tr><td>Exames ocupacionais conforme PCMSO (${c.linhas.map(l=>esc(l.nome)+': '+l.qtd).join('; ')})</td><td class="num">${c.pessoas}</td><td class="num">${brl(c.exames)}</td></tr>
       ${c.desc?`<tr><td>Desconto (${p.desconto}%)</td><td></td><td class="num">− ${brl(c.desc)}</td></tr>`:''}
       <tr><td><b>Total</b></td><td></td><td class="num"><b>${brl(c.total)}</b></td></tr></tbody></table>
-    ${c.mensal?`<p>Além disso, a CONTRATADA fará a gestão mensal dos eventos de SST no eSocial, pelo valor de ${brl(c.mensal)} (${extenso(c.mensal)}) por mês, a partir do segundo mês de vigência.</p>`:''}
-    <h4>Cláusula 2ª · Do valor e da forma de pagamento</h4>
-    <p>Pelos serviços de implantação, a CONTRATANTE pagará o valor total de <b>${brl(c.total)}</b> (${extenso(c.total)}), nas seguintes condições: ${esc(p.pagamento)}.</p>
-    <p>O atraso no pagamento sujeitará a CONTRATANTE a multa de 2% e juros de 1% ao mês sobre o valor devido.</p>
-    <h4>Cláusula 3ª · Do prazo e da vigência</h4>
-    <p>Este contrato vigora por 12 (doze) meses a partir da assinatura e pode ser renovado por acordo entre as partes. Os programas PGR e PCMSO serão revisados conforme a legislação vigente.</p>
-    <h4>Cláusula 4ª · Das obrigações da CONTRATADA</h4>
+    ${c.mensal?`<p>Além disso, a CONTRATADA fará a gestão mensal dos eventos de SST no eSocial, pelo valor de ${brl(c.mensal)} (${extenso(c.mensal)}) por mês, a partir do segundo mês de vigência, com vencimento todo dia ${+ct.venc||10}.</p>`:''}
+    ${cl('Do valor e da forma de pagamento')}
+    <p>Pelos serviços de implantação, a CONTRATANTE pagará o valor total de <b>${brl(c.total)}</b> (${extenso(c.total)}), nas seguintes condições: ${esc(ct.pagamento)}.</p>
+    <p>O atraso no pagamento sujeitará a CONTRATANTE a multa de ${+ct.multa}% e juros de ${+ct.juros}% ao mês sobre o valor devido.${ct.reajuste?` Os valores recorrentes serão reajustados pelo ${esc(ct.reajuste)}.`:''}</p>
+    ${cl('Do prazo e da vigência')}
+    <p>Este contrato vigora por ${+ct.vigencia} (${numExt(ct.vigencia)}) meses a partir de ${fdata(ct.inicio+'T12:00:00')} e pode ser renovado por acordo entre as partes. Os programas PGR e PCMSO serão revisados conforme a legislação vigente.</p>
+    ${cl('Das obrigações da CONTRATADA')}
     <p>Executar os serviços com profissionais habilitados; entregar os documentos nos prazos combinados; realizar os exames na sede ou com a unidade móvel, quando contratada; manter sigilo dos dados de saúde dos colaboradores, conforme a LGPD.</p>
-    <h4>Cláusula 5ª · Das obrigações da CONTRATANTE</h4>
+    ${cl('Das obrigações da CONTRATANTE')}
     <p>Fornecer as informações necessárias sobre funções, ambientes e colaboradores; garantir o acesso dos técnicos às instalações; encaminhar os colaboradores aos exames nos prazos; efetuar os pagamentos nas datas acordadas.</p>
-    <h4>Cláusula 6ª · Da rescisão</h4>
-    <p>Qualquer das partes pode rescindir este contrato mediante aviso prévio por escrito de 30 (trinta) dias, ficando a CONTRATANTE responsável pelo pagamento dos serviços já executados.</p>
-    <h4>Cláusula 7ª · Do foro</h4>
-    <p>Fica eleito o foro da comarca de Rio Verde - GO para dirimir quaisquer questões oriundas deste contrato.</p>
-    <p style="margin-top:18px">Rio Verde - GO, ${dt}.</p>
-    <div class="sign"><div>${esc(cf.nome)}<br>CONTRATADA</div><div>${esc(e.razao)}<br>${esc(e.contato)} · CONTRATANTE</div></div>
-    <div class="note">Modelo de demonstração. Substituir pelo modelo de contrato da ASO revisado pelo jurídico antes do uso.</div>
-  </div>`;
+    ${(ct.extras||[]).map(x=>cl(x.titulo)+`<p>${esc(x.texto)}</p>`).join('')}
+    ${cl('Da rescisão')}
+    <p>Qualquer das partes pode rescindir este contrato mediante aviso prévio por escrito de ${+ct.aviso} (${numExt(ct.aviso)}) dias, ficando a CONTRATANTE responsável pelo pagamento dos serviços já executados.</p>
+    ${cl('Do foro')}
+    <p>Fica eleito o foro da comarca de ${esc(ct.foro)} para dirimir quaisquer questões oriundas deste contrato.</p>
+    <p style="margin-top:18px">${esc(ct.cidade)}, ${dt}.</p>
+    <div class="sign"><div>${esc(cf.nome)}<br>CONTRATADA</div><div>${esc(e.razao)}<br>${esc(ct.repNome)} · CONTRATANTE</div></div>
+    ${ct.t1||ct.t2?`<div class="sign" style="margin-top:40px"><div>Testemunha 1<br>${esc(ct.t1)}</div><div>Testemunha 2<br>${esc(ct.t2)}</div></div>`:''}
+    <div class="note">Modelo de demonstração. Substituir pelo modelo de contrato da ASO revisado pelo jurídico antes do uso.</div>`;
+}
+function viewContrato(id){
+  const p=getProp(id);if(!p){app.innerHTML='<div class="empty">Contrato não encontrado.</div>';return}
+  const e=getEmp(p.empresaId);
+  document.title=`Contrato ${p.num} - ${e.fantasia||e.razao}`;
+  app.innerHTML=`<div class="ct-bar"><b>Contrato ${p.num} · ${esc(e.fantasia||e.razao)}</b>
+    <div style="display:flex;gap:8px"><button class="btn green" onclick="window.print()">⬇ Baixar PDF</button><a class="btn light" href="#/contratos/${p.id}">Editar contrato</a><a class="btn light" href="#/dash">Voltar ao painel</a></div></div>
+  <div class="paper">${contratoHTML(p)}</div>`;
+}
+
+/* ================= GERADOR DE CONTRATO ================= */
+function viewContratos(id){
+  const ps=[...db.propostas].reverse();
+  if(!ps.length)return `<div class="ph"><h1>Gerador de contrato</h1></div><div class="card empty">Crie uma proposta primeiro.</div>`;
+  const p=getProp(id)||ps.find(x=>['aprovada','contrato'].includes(x.status))||ps[0];
+  p.ct=ctDef(p);const ct=p.ct;
+  const inp=(k,l,t='text',x='')=>`<div><label class="f">${l}</label><input type="${t}" data-k="${k}" value="${esc(ct[k])}" ${x}></div>`;
+  const extrasHTML=()=>ct.extras.length?ct.extras.map((x,i)=>`<div style="border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;display:flex;gap:10px;align-items:flex-start">
+      <div style="flex:1"><b>${esc(x.titulo)}</b><p class="muted" style="font-size:12px;margin-top:2px">${esc(x.texto)}</p></div><button class="iconbtn" data-rx="${i}" title="Remover">✕</button></div>`).join(''):'<p class="muted" style="font-size:13px">Nenhuma cláusula extra.</p>';
+  bindPage=()=>{
+    const prev=()=>{$('#ctPrev').innerHTML=contratoHTML(p);save()};
+    const rex=()=>{$('#exList').innerHTML=extrasHTML();prev()};
+    $('#ctSel').onchange=e=>{location.hash='#/contratos/'+e.target.value};
+    $('.main').addEventListener('input',e=>{const k=e.target.dataset.k;if(!k)return;ct[k]=e.target.value;prev()});
+    $('.main').addEventListener('click',e=>{const r=e.target.closest('[data-rx]');if(r){ct.extras.splice(+r.dataset.rx,1);rex()}});
+    $('#addEx').onclick=()=>{const t=$('#exT').value.trim(),x=$('#exX').value.trim();if(!t||!x)return toast('Preencha título e texto');ct.extras.push({titulo:t,texto:x});$('#exT').value='';$('#exX').value='';rex()};
+    $('#iaEx').onclick=async()=>{const d=$('#exIA').value.trim();if(!d)return toast('Descreva a condição especial');const b=$('#iaEx');b.disabled=true;b.textContent='Escrevendo...';
+      try{const e=getEmp(p.empresaId);const txt=await callIA(SYS_ASO+' Você também redige cláusulas contratuais claras e equilibradas, em linguagem jurídica simples.',
+        `Contrato de prestação de serviços de SST entre a ASO (contratada) e ${e.razao} (contratante).
+Escreva UMA cláusula contratual para esta condição combinada: "${d}".
+Regras: texto corrido, de 1 a 3 frases, use "CONTRATADA" e "CONTRATANTE", sem numeração e sem markdown. Não contradiga: vigência de ${ct.vigencia} meses, multa de ${ct.multa}%, juros de ${ct.juros}% ao mês, aviso prévio de ${ct.aviso} dias.
+Responda APENAS com JSON: {"titulo":"Da ... (título curto começando com Do/Da/Dos/Das)","texto":"..."}`,600);
+        const j=extraiJSON(txt);ct.extras.push({titulo:String(j.titulo||'Da condição especial').replace(/^Cláusula[^·]*·\s*/,''),texto:String(j.texto||'').replace(/[*#]/g,'')});$('#exIA').value='';rex();toast('Cláusula adicionada')}
+      catch(err){toast(err.message)}b.disabled=false;b.textContent='✦ Escrever cláusula com IA'};
+    $('#ctPdf').onclick=()=>{if(p.status!=='contrato'&&['aprovada'].includes(p.status))p.status='contrato';p.contratoEm=p.contratoEm||hoje();save();location.hash='#/contrato/'+p.id};
+    $('#ctReset').onclick=()=>{delete p.ct;save();route()};
+  };
+  return `<div class="ph"><div><h1>Gerador de contrato</h1><p class="muted">Escolha a proposta, ajuste as condições e baixe o contrato em PDF.</p></div>
+    <div style="display:flex;gap:8px"><button class="btn light" id="ctReset">Restaurar padrão</button><button class="btn green" id="ctPdf">⬇ Gerar PDF</button></div></div>
+  <div class="build" style="grid-template-columns:400px 1fr"><div class="col">
+    <div class="card"><h3><span class="n">1</span>Proposta</h3>
+      <select id="ctSel">${ps.map(x=>`<option value="${x.id}" ${x.id===p.id?'selected':''}>${x.num} · ${esc((getEmp(x.empresaId)||{}).fantasia||'')} · ${ST[x.status]}</option>`).join('')}</select>
+      ${['aprovada','contrato'].includes(p.status)?'':'<p style="font-size:12px;margin-top:8px;color:var(--warn);font-weight:600">⚠ Proposta ainda não aprovada: o contrato usa todos os itens da proposta.</p>'}</div>
+    <div class="card"><h3><span class="n">2</span>Condições</h3>
+      <div class="grid2" style="margin-bottom:12px">${inp('numero','Nº do contrato')}${inp('inicio','Início da vigência','date')}</div>
+      <div class="grid3" style="margin-bottom:12px">${inp('vigencia','Vigência (meses)','number','min="1"')}${inp('venc','Dia de vencimento','number','min="1" max="31"')}${inp('aviso','Aviso prévio (dias)','number','min="0"')}</div>
+      <div class="grid2" style="margin-bottom:12px">${inp('multa','Multa por atraso (%)','number','step="0.1"')}${inp('juros','Juros ao mês (%)','number','step="0.1"')}</div>
+      <div style="margin-bottom:12px">${inp('pagamento','Forma de pagamento')}</div>
+      <div style="margin-bottom:12px">${inp('reajuste','Índice de reajuste (vazio = sem reajuste)')}</div>
+      <div class="grid2">${inp('foro','Foro')}${inp('cidade','Local da assinatura')}</div></div>
+    <div class="card"><h3><span class="n">3</span>Assinaturas</h3>
+      <div class="grid2" style="margin-bottom:12px">${inp('repNome','Representante do cliente')}${inp('repCargo','Cargo')}</div>
+      <div class="grid2" style="margin-bottom:12px">${inp('repDoc','Documento do representante (opcional)')}${inp('aspNome','Representante da ASO')}</div>
+      <div class="grid2">${inp('t1','Testemunha 1 (opcional)')}${inp('t2','Testemunha 2 (opcional)')}</div></div>
+    <div class="card"><h3><span class="n">4</span>Cláusulas especiais</h3>
+      <div id="exList" style="margin-bottom:12px">${extrasHTML()}</div>
+      <div style="border:2px solid var(--accent);border-radius:12px;padding:12px;background:#f3fbf4;margin-bottom:12px">
+        <label class="f">✦ Descreva o que foi combinado</label><textarea id="exIA" rows="2" placeholder="Ex.: exames demissionais com 20% de desconto; unidade móvel 2x por ano sem custo"></textarea>
+        <button class="btn sm green" id="iaEx" style="margin-top:8px">✦ Escrever cláusula com IA</button></div>
+      <details><summary class="muted" style="cursor:pointer;font-size:13px">Ou escrever manualmente</summary>
+        <div style="margin-top:10px"><input id="exT" placeholder="Título (ex.: Da confidencialidade)" style="margin-bottom:8px"><textarea id="exX" rows="3" placeholder="Texto da cláusula"></textarea>
+        <button class="btn sm light" id="addEx" style="margin-top:8px">＋ Adicionar cláusula</button></div></details></div>
+  </div>
+  <div class="col"><div class="sticky" style="max-height:calc(100vh - 40px);overflow:auto;border-radius:16px;background:#e9eef0;padding:16px">
+    <div class="paper" id="ctPrev" style="margin:0 auto;zoom:.85">${contratoHTML(p)}</div></div></div></div>`;
 }
 
 route();
