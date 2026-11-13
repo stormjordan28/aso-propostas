@@ -299,7 +299,7 @@ function snapshot(p){
   const px={};usados.forEach(id=>{const x=db.exames.find(y=>y.id===id);if(x)px[id]=[x.nome,x.valor]});
   const ps={};db.servicos.forEach(s=>ps[s.id]=s.valor);
   const i={};Object.entries(p.itens).forEach(([k,v])=>i[k]=[v.on?1:0,v.qtd]);
-  return{v:1,p:{id:p.id,n:p.num,c:p.criada,va:p.validade,d:p.desconto,pg:p.pagamento,es:p.esocial?1:0,o:p.obs,f:p.funcoes.map(f=>[f.nome,f.qtd,f.riscos,f.exames]),i},
+  return{v:1,p:{id:p.id,n:p.num,c:p.criada,va:p.validade,d:p.desconto,pg:p.pagamento,es:p.esocial?1:0,o:p.obs,di:p.diagIA||'',f:p.funcoes.map(f=>[f.nome,f.qtd,f.riscos,f.exames]),i},
     e:{r:e.razao,f:e.fantasia,cn:e.cnpj,ca:e.cnae,cd:e.cnaeDesc,g:e.grau,ct:e.contato,cg:e.cargo,ci:e.cidade,uf:e.uf,en:e.endereco},px,ps,m:db.esocialMensal,w:db.config.whats};
 }
 const linkProp=p=>location.href.split('#')[0].split('?')[0]+'#/v/'+b64e(JSON.stringify(snapshot(p)));
@@ -312,12 +312,26 @@ function abrirSnapshot(data){
     db.servicos.forEach(sv=>{if(s.ps[sv.id]!==undefined)sv.valor=s.ps[sv.id]});
     db.esocialMensal=s.m;db.config.whats=s.w;
     const itens={};Object.entries(s.p.i).forEach(([k,[on,q]])=>itens[k]={on:!!on,qtd:q});
-    db.propostas.push({id:s.p.id,num:s.p.n,empresaId:eid,criada:s.p.c,validade:s.p.va,desconto:s.p.d,pagamento:s.p.pg,esocial:!!s.p.es,obs:s.p.o,
+    db.propostas.push({id:s.p.id,num:s.p.n,empresaId:eid,criada:s.p.c,validade:s.p.va,desconto:s.p.d,pagamento:s.p.pg,esocial:!!s.p.es,obs:s.p.o,diagIA:s.p.di||'',
       funcoes:s.p.f.map(([nome,qtd,riscos,exames])=>({nome,qtd,riscos,exames})),itens,status:'visualizada'});
     save();
   }
   viewProposta(s.p.id);
 }
+
+/* ================= IA (modo teste: chave só no navegador do adm) ================= */
+const IAKEY='aso_ia_key';
+const getKey=()=>{try{return localStorage.getItem(IAKEY)||''}catch(e){return''}};
+async function callIA(system,user,max=1500){
+  const k=getKey();if(!k)throw new Error('Cadastre a chave da IA em Tabela de preços → Chave da IA.');
+  const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'content-type':'application/json','x-api-key':k,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+    body:JSON.stringify({model:'claude-sonnet-5-5',max_tokens:max,system,messages:[{role:'user',content:user}]})});
+  const j=await r.json();
+  if(!r.ok)throw new Error((j.error&&j.error.message)||('Erro '+r.status));
+  return j.content.filter(c=>c.type==='text').map(c=>c.text).join('').trim();
+}
+function extraiJSON(t){const m=t.match(/\{[\s\S]*\}/);if(!m)throw new Error('A IA não devolveu um JSON válido.');return JSON.parse(m[0])}
+const SYS_ASO='Você é especialista em saúde e segurança do trabalho no Brasil (NRs, PGR, PCMSO, LTCAT, eSocial) e consultor da ASO - Assessoria em Saúde Ocupacional, de Rio Verde-GO. Responda em português do Brasil, com precisão técnica, sem inventar normas.';
 
 /* ================= ROTEADOR ================= */
 window.addEventListener('hashchange',route);
@@ -451,6 +465,10 @@ function renderNova(emp){
   shell('nova',`<div class="ph"><div><h1>Proposta para ${esc(emp.fantasia||emp.razao)}</h1><p class="muted">${fmtCNPJ(emp.cnpj)} · ${esc(emp.cnaeDesc||'')} · grau de risco ${esc(emp.grau)}</p></div>
     <a class="btn light" href="#/nova">Trocar empresa</a></div>
   <div class="build"><div class="col">
+    <div class="card" style="border:2px solid var(--accent);background:linear-gradient(180deg,#f3fbf4,#fff)"><h3>✦ Montar com IA</h3>
+      <p class="muted" style="margin:-6px 0 10px">Descreva a empresa do jeito que o cliente falou. A IA monta as funções, os riscos e os exames. Depois é só revisar.</p>
+      <textarea rows="3" id="iadesc" placeholder="Ex.: Armazém de grãos com 30 funcionários: 12 no secador e na moega, 5 operadores de empilhadeira, 6 motoristas de carreta, 2 da manutenção que sobem nos silos e 5 no escritório.">${esc(p.descIA||'')}</textarea>
+      <button class="btn green" data-act="ia-funcoes" style="margin-top:10px">✦ Montar funções com IA</button> <span id="iamsg" class="muted" style="font-size:12px"></span></div>
     <div class="card"><h3><span class="n">1</span>Funções e riscos</h3>
       <p class="muted" style="margin:-6px 0 14px">Marque os riscos de cada função: o sistema sugere os exames e os treinamentos. Ajuste os exames clicando neles.</p>
       <div id="fnList">${p.funcoes.map((f,i)=>`<div class="fn-box">
@@ -492,7 +510,9 @@ function renderResumo(){
     ${c.desc?`<div class="sum-line"><span>Desconto (${draft.desconto}%)</span><b style="color:#137a48">− ${brl(c.desc)}</b></div>`:''}
     <div class="sum-line total"><span>Total</span><span>${brl(c.total)}</span></div>
     ${c.mensal?`<p class="muted" style="font-size:12px">+ ${brl(c.mensal)}/mês de gestão eSocial</p>`:''}
-    <div style="display:flex;flex-direction:column;gap:8px;margin-top:18px">
+    <div style="margin-top:16px;padding:12px;border-radius:10px;background:${draft.diagIA?'var(--accent-soft)':'#f5f8f9'};font-size:12px">${draft.diagIA?'<b style="color:#137a48">✓ Diagnóstico escrito pela IA</b> · vai na proposta':'Diagnóstico padrão (por regras)'}
+      <button class="btn sm ${draft.diagIA?'light':''}" data-act="ia-diag" style="margin-top:8px;width:100%;justify-content:center">✦ ${draft.diagIA?'Reescrever':'Gerar'} diagnóstico com IA</button></div>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">
       <button class="btn light" data-act="preview" style="justify-content:center">Pré-visualizar</button>
       <button class="btn green lg" data-act="gerar" style="justify-content:center">Gerar link da proposta</button></div>`;
 }
@@ -503,6 +523,7 @@ function bindNova(){
     const t=e.target,p=draft;
     if(t.dataset.f!==undefined){const f=p.funcoes[+t.dataset.f];f[t.dataset.k]=t.dataset.k==='qtd'?(+t.value||0):t.value;if(t.dataset.k==='qtd'){syncTreinos(p);renderItens()}renderResumo()}
     else if(t.dataset.iq){p.itens[t.dataset.iq].qtd=+t.value||0;renderResumo()}
+    else if(t.id==='iadesc'){p.descIA=t.value}
     else if(t.dataset.c){const k=t.dataset.c;p[k]=k==='esocial'?t.value==='1':(['desconto','validade'].includes(k)?(+t.value||0):t.value);renderResumo()}
   });
   main.addEventListener('change',e=>{if(e.target.dataset.c==='esocial'){draft.esocial=e.target.value==='1';renderResumo()}});
@@ -516,6 +537,42 @@ function bindNova(){
     else if(a==='addf'){p.funcoes.push({nome:'',qtd:1,riscos:[],exames:['clinico']});renderNova(getEmp(p.empresaId))}
     else if(a==='delf'){p.funcoes.splice(i,1);if(!p.funcoes.length)p.funcoes.push({nome:'',qtd:1,riscos:[],exames:['clinico']});syncTreinos(p);renderNova(getEmp(p.empresaId))}
     else if(a==='item'){p.itens[t.dataset.s].on=t.checked;renderResumo()}
+    else if(a==='ia-funcoes'){
+      const desc=($('#iadesc').value||'').trim();if(!desc)return toast('Descreva a empresa primeiro');
+      t.disabled=true;$('#iamsg').textContent='A IA está montando as funções...';
+      const emp=getEmp(p.empresaId);
+      callIA(SYS_ASO,`Empresa: ${emp.razao} · atividade: ${emp.cnaeDesc||'?'} · grau de risco ${emp.grau}.
+Descrição do cliente: "${desc}"
+
+Monte as funções para o orçamento. Use SOMENTE estes ids.
+Riscos: ${RISCOS.map(r=>r.id+' ('+r.nome+')').join(', ')}
+Exames: ${db.exames.map(e=>e.id+' ('+e.nome+')').join(', ')}
+Todo funcionário faz "clinico". Escolha os exames pelo risco real da função, sem exagero.
+Responda APENAS com JSON: {"funcoes":[{"nome":"...","qtd":0,"riscos":["..."],"exames":["..."]}],"observacao":"uma frase curta sobre algo que o comercial deve confirmar com o cliente"}`,1500)
+      .then(txt=>{const j=extraiJSON(txt);
+        const rOk=new Set(RISCOS.map(r=>r.id)),eOk=new Set(db.exames.map(e=>e.id));
+        p.funcoes=(j.funcoes||[]).map(f=>({nome:String(f.nome||''),qtd:+f.qtd||1,riscos:(f.riscos||[]).filter(x=>rOk.has(x)),exames:[...new Set(['clinico',...(f.exames||[]).filter(x=>eOk.has(x))])]}));
+        if(!p.funcoes.length)throw new Error('A IA não encontrou funções na descrição.');
+        RISCOS.filter(r=>r.treino).forEach(r=>{if(p.funcoes.some(f=>f.riscos.includes(r.id)))p.itens[r.treino].on=true});
+        syncTreinos(p);p.notaIA=j.observacao||'';renderNova(getEmp(p.empresaId));
+        toast('Funções montadas pela IA. Revise antes de gerar.');
+        if(p.notaIA)setTimeout(()=>{const m=$('#iamsg');if(m)m.innerHTML='<b>Confirmar com o cliente:</b> '+esc(p.notaIA)},50);
+      }).catch(err=>{t.disabled=false;$('#iamsg').innerHTML='<b style="color:#b3261e">'+esc(err.message)+'</b>'});
+    }
+    else if(a==='ia-diag'){
+      if(!p.funcoes.some(f=>f.nome&&f.qtd))return toast('Preencha as funções primeiro');
+      t.disabled=true;t.textContent='Escrevendo...';
+      const emp=getEmp(p.empresaId),c=calc(p);
+      callIA(SYS_ASO,`Escreva o diagnóstico que vai na proposta comercial da ASO para o cliente.
+Empresa: ${emp.fantasia||emp.razao} · atividade: ${emp.cnaeDesc||'?'} · CNAE ${emp.cnae||'?'} · grau de risco ${emp.grau} · ${c.pessoas} colaboradores.
+Funções:
+${c.linhas.map(l=>`- ${l.nome} (${l.qtd}): riscos ${l.riscos.map(r=>RISCOS.find(x=>x.id===r).nome).join(', ')||'não marcados'}; exames ${l.exames.map(exNome).join(', ')}`).join('\n')}
+Serviços incluídos: ${c.itens.map(i=>i.nome.split(' · ')[0]).join(', ')}.
+
+Regras: 2 parágrafos curtos (no máximo 110 palavras no total), dirigidos ao cliente ("sua empresa"), tom consultivo e confiante. Cite as NRs que se aplicam às funções. Mostre que o pacote foi pensado para a operação dele. Sem valores, sem títulos, sem markdown, sem asteriscos.`,700)
+      .then(txt=>{p.diagIA=txt.replace(/[*#]/g,'');renderResumo();toast('Diagnóstico pronto: vai aparecer na proposta')})
+      .catch(err=>{t.disabled=false;t.textContent='✦ Gerar diagnóstico com IA';toast(err.message)});
+    }
     else if(a==='preview'||a==='gerar'){
       if(!p.funcoes.some(f=>f.nome&&f.qtd))return toast('Preencha ao menos uma função com nome e quantidade');
       p.funcoes=p.funcoes.filter(f=>f.nome&&f.qtd);
@@ -543,6 +600,9 @@ function viewPrecos(){
       else if(t.dataset.cf){db.config[t.dataset.cf]=t.value}
       else if(t.id==='esm'){db.esocialMensal=+t.value||0}
       save();});
+    $('#iakey').oninput=e=>{try{localStorage.setItem(IAKEY,e.target.value.trim())}catch(x){}};
+    $('#iadel').onclick=()=>{try{localStorage.removeItem(IAKEY)}catch(x){};$('#iakey').value='';$('#iast').textContent='Chave removida'};
+    $('#iatest').onclick=async()=>{$('#iast').textContent='Testando...';try{await callIA('Responda só OK.','teste',10);$('#iast').innerHTML='<b style="color:#137a48">✓ Chave funcionando</b>'}catch(err){$('#iast').innerHTML='<b style="color:#b3261e">'+esc(err.message)+'</b>'}};
     $('#addEx').onclick=()=>{const n=prompt('Nome do exame:');if(n){db.exames.push({id:uid(),nome:n,valor:0});save();route()}};
   };
   return `<div class="ph"><div><h1>Tabela de preços</h1><p class="muted">Os orçamentos usam estes valores. As alterações salvam automaticamente.</p></div></div>
@@ -551,6 +611,10 @@ function viewPrecos(){
     <button class="btn light sm" id="addEx" style="margin-top:12px">＋ Adicionar exame</button></div></div>
   <div class="col"><div class="card"><h3>Programas, treinamentos e serviços</h3><table><tbody>${db.servicos.map(s=>`<tr><td>${esc(s.nome)}<br><span class="muted" style="font-size:12px">${s.un==='pessoa'?'por pessoa':'valor único'}</span></td><td style="width:140px"><input type="number" value="${s.valor}" data-ps="${s.id}"></td></tr>`).join('')}
     <tr><td>Gestão eSocial SST<br><span class="muted" style="font-size:12px">mensal</span></td><td><input type="number" id="esm" value="${db.esocialMensal}"></td></tr></tbody></table></div>
+    <div class="card" style="border:2px solid var(--accent)"><h3>✦ Chave da IA (modo teste)</h3>
+      <p class="muted" style="margin:-6px 0 12px">Fica salva só neste navegador. Não vai para o código, o GitHub ou o link do cliente.</p>
+      <input type="password" id="iakey" placeholder="sk-ant-..." value="${esc(getKey())}">
+      <div style="display:flex;gap:8px;margin-top:10px"><button class="btn sm" id="iatest">Testar chave</button><button class="btn sm light" id="iadel">Remover chave</button><span id="iast" class="muted" style="font-size:12px;align-self:center"></span></div></div>
     <div class="card"><h3>Dados da ASO (aparecem no contrato)</h3>
     ${[['nome','Razão social'],['cnpj','CNPJ'],['endereco','Endereço'],['telefone','Telefone'],['email','E-mail'],['whats','WhatsApp que recebe as aprovações']].map(([k,l])=>`<div style="margin-bottom:10px"><label class="f">${l}</label><input value="${esc(db.config[k])}" data-cf="${k}"></div>`).join('')}</div>
   </div></div>`;
@@ -597,17 +661,24 @@ REGRAS
     };
     $('#pp').onchange=gen;$('#pt').onchange=gen;gen();
     $('#cpp').onclick=()=>{navigator.clipboard?.writeText($('#out').value);toast('Prompt copiado — cole no Claude')};
+    $('#gia').onclick=async()=>{const b=$('#gia');b.disabled=true;b.textContent='Gerando...';
+      try{const r=await callIA(SYS_ASO,$('#out').value,1200);$('#iaout').style.display='block';$('#iares').value=r.replace(/\*\*/g,'')}catch(err){toast(err.message)}
+      b.disabled=false;b.textContent='✦ Gerar aqui com IA'};
+    $('#cpr').onclick=()=>{navigator.clipboard?.writeText($('#iares').value);toast('Copiado')};
   };
   return `<div class="ph"><div><h1>Gerador de prompt</h1><p class="muted">Monta um prompt com todos os dados da proposta. É só copiar e colar no Claude ou no ChatGPT.</p></div></div>
   <div class="card"><div class="grid2" style="margin-bottom:14px">
     <div><label class="f">Proposta</label><select id="pp">${ps.map(p=>`<option value="${p.id}" ${p.id===id?'selected':''}>${p.num} · ${esc((getEmp(p.empresaId)||{}).fantasia||'')}</option>`).join('')}</select></div>
     <div><label class="f">O que você quer gerar</label><select id="pt">${Object.entries(TIPOS).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></div></div>
     <textarea id="out" rows="22" style="font-family:ui-monospace,monospace;font-size:12.5px;line-height:1.55"></textarea>
-    <button class="btn green" id="cpp" style="margin-top:12px">Copiar prompt</button></div>`;
+    <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn light" id="cpp">Copiar prompt</button><button class="btn green" id="gia">✦ Gerar aqui com IA</button></div>
+    <div id="iaout" style="display:none;margin-top:18px"><label class="f">Resultado da IA</label><textarea id="iares" rows="10" style="font-size:14px;line-height:1.6"></textarea>
+    <button class="btn sm light" id="cpr" style="margin-top:8px">Copiar resultado</button></div></div>`;
 }
 
 /* ================= PROPOSTA (LINK DO CLIENTE) ================= */
 function diagnostico(p,e,c){
+  if(p.diagIA)return p.diagIA.split(/\n\s*\n|\n/).filter(x=>x.trim()).map(x=>`<p>${esc(x.trim())}</p>`).join('');
   const rs=[...new Set(p.funcoes.flatMap(f=>f.riscos))];
   return `<p>A <b>${esc(e.fantasia||e.razao)}</b> tem <b>${c.pessoas} colaboradores</b> em ${c.linhas.length} funções e atua em atividade de <b>grau de risco ${esc(e.grau)}</b>${e.cnaeDesc?` (${esc(e.cnaeDesc.toLowerCase())})`:''}. Pontos de atenção identificados:</p>
   <ul>${rs.map(r=>`<li>${RISCOS.find(x=>x.id===r).texto}</li>`).join('')||'<li>Exames clínicos periódicos para todas as funções.</li>'}</ul>`;
